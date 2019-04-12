@@ -1,0 +1,289 @@
+---
+title: "BAN430 Assignment2"
+author: ""
+date: 
+output:
+  html_document:
+    df_print: paged
+  pdf_document: default
+  word_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, eval=TRUE, echo=FALSE, warning=FALSE, error=FALSE}
+rm(list = ls())
+library(ggplot2)
+library(tseries)
+library(forecast)
+library(seasonal)
+library(zoo)
+library(reshape2)
+library(rdatamarket)
+library(urca)
+library(ggpubr)
+```
+
+#Part 1
+##Read in data & Set train and test set
+```{r}
+auscons <- as.ts(dmseries("http://bit.ly/1ONlQzK"))
+atrain<-window(auscons,end = c(1988,2), frequency = 4)
+atest<-window(auscons,start= c(1988,3), frequency = 4)
+```
+##Data Summary
+```{r}
+summary(atrain)
+ggtsdisplay(atrain)
+```
+##Find the best ARIMA model
+###Trend
+```{r}
+#The number of regular differences required
+ndiffs(atrain)
+atrain%>%diff(lag=1)%>%nsdiffs()
+
+#the number of seasonal differences required
+nsdiffs(atrain)
+atrain_sadj<-diff(atrain,lag = 4)
+atrain_sadj%>%ndiffs()
+ggtsdisplay(atrain_sadj)
+summary(ur.kpss(atrain_sadj))
+summary(ur.df(atrain_sadj,type = "drift"))
+```
+
+###Heteroscedasticity
+```{r}
+L<-BoxCox.lambda(atrain)
+#0 is log, 1 is its self. Here L=0.096
+atrain_adj<-BoxCox(atrain,L)
+
+p1<-autoplot(atrain)+ ggtitle("Training set")
+p2<-autoplot(atrain_adj)+ ggtitle("After adjusted for Heteroscedasticity")
+ggarrange(p1, p2, ncol = 1, nrow = 2)
+```
+
+##Identify an appropriate seasonal ARIMA model
+```{r}
+a100s010<-Arima(atrain, order = c(1,0,0), seasonal = list(order = c(0,1, 0)),lambda = L)
+p3<-a100s010$residuals%>%ggAcf()
+p4<-a100s010$residuals%>%ggPacf()
+ggarrange(p3, p4, ncol = 2, nrow = 1)
+  
+a100s110<-Arima(atrain, order = c(1,0,0), seasonal = list(order = c(1,1, 0)),lambda = L)
+#spike at 8,9,16
+checkresiduals(a100s110)
+
+a100s210<-Arima(atrain, order = c(1,0,0), seasonal = list(order = c(2,1,0)),lambda = L)#residual ACf "spike" at 1,8,9,10,16,17,but still insignificant
+checkresiduals(a100s210)
+
+a200s210<-Arima(atrain_adj, order = c(2,0,0), seasonal = list(order = c(2,1,0)),lambda = L)
+checkresiduals(a200s210)
+
+
+AIC(a100s010,a100s110,a100s210,a200s210)
+BIC(a100s010,a100s110,a100s210,a200s210)
+data.frame(model=c("a100s010","a100s110","a100s210","a200s210"),AICc=c(a100s010$aicc,a100s110$aicc,a100s210$aicc,a200s210$aicc))
+
+```
+
+###check model's stability
+```{r}
+autoplot(a100s210)
+```
+
+##Test residual  
+```{r}
+checkresiduals(a100s210)
+#small p-value indicats significant autocorrelation
+a100s210$residuals%>%ggPacf()
+a100s210$residuals%>%ggAcf()
+```
+
+## Theoretical ACF and PACF computations
+```{r}
+
+theacf<-ARMAacf(ar=c(0.989,0,0,-0.508,0,0,0,-0.419), lag.max = 20)
+plot(1:10, theacf[2:11], type = "h", ylab = "ACF", col = "blue", main = "theoretical ACF")
+acf(atrain_sadj, lag.max = 10, main = "Sample ACF")
+
+
+thepacf<-ARMAacf(ar=c(0.989,0,0,-0.508,0,0,0,-0.419), lag.max = 20,pacf = T)
+plot(1:10, thepacf[2:11], type = "h", ylab = "PACF", col = "blue", main = "theoretical PACF")
+pacf(atrain_sadj, lag.max = 10, main = "Sample PACF")
+
+```
+
+##Forecast
+```{r}
+fcastar<-forecast(a100s210,h=length(atest),level = 95)
+round(accuracy(fcastar,atest),2)
+autoplot(fcastar)
+```
+
+###Plot
+```{r}
+plotseries<-window(auscons,start= c(1982,3), frequency = 4)
+fdata <- data.frame(Time=as.Date(time(plotseries)), 
+                              Y_as = melt(plotseries)$value)
+fcast.data <- cbind(fdata,
+              Fitted = c(rep(NA,24), fcastar$mean),
+              Upper.95 =c(rep(NA,24), fcastar$upper),
+              Lower.95=c(rep(NA,24), fcastar$lower))
+
+
+ggplot(data=fcast.data,aes(x=Time))+
+  geom_ribbon(aes(ymin=Lower.95,ymax=Upper.95), fill = "grey75")+
+  geom_line(aes(y=Y_as), col='indianred3',size=0.8)+
+  geom_line(aes(y=Fitted), col ="steelblue3",size=0.8)+
+  ggtitle("Forecasts ")+ 
+   ylab("") + 
+   xlab("Time")
+```
+
+
+# Part2. Annual lynx trapping in Canada 1821 to 1934
+
+##(1) Divide the data into a training set and a test set where the test set is the last 12 observations.
+
+```{r, eval = TRUE, echo=FALSE, warning=FALSE, error=FALSE,fig.height=4, fig.width=6}
+lynx <- as.ts(dmseries("http://bit.ly/10Scgaz"))
+summary(lynx)
+hist(lynx)
+
+autoplot(lynx)+ xlab("Year") +
+ylab("")+
+ggtitle("Annual lynx trapping in Canada 1821 to 1934")
+
+train2 <-window(lynx, end=1922)
+test2 <-window(lynx, start = 1923)
+```
+
+##(2) Identify an appropriate ARIMA model and estimate it
+
+### Unit Root test
+
+```{r, eval = TRUE, echo=FALSE, warning=FALSE, error=FALSE,fig.height=4, fig.width=6}
+summary(ur.df(train2,selectlags = "AIC"))
+summary(ur.kpss(train2))
+summary(ur.ers(train2))
+```
+
+### ACF and PACF plots
+
+```{r, eval = TRUE, echo=FALSE, warning=FALSE, error=FALSE,fig.height=4, fig.width=6}
+ggAcf(train2, lag.max = 90)+ ggtitle("ACF of lynx series")
+ggPacf(train2, lag.max = 20)+ ggtitle("PACF of lynx series")
+```
+
+### Try the chosen model and use the AICc to search for a better model
+
+```{r, eval = TRUE, echo=FALSE, warning=FALSE, error=FALSE,fig.height=4, fig.width=6}
+lam <-BoxCox.lambda(train2)
+arima80<-Arima(train2, order = c(8,0,0),lambda = lam )
+arima70<-Arima(train2, order = c(7,0,0),lambda = lam )
+arima90<-Arima(train2, order = c(9,0,0),lambda = lam )
+arima81<-Arima(train2, order = c(8,0,1),lambda = lam )
+data.frame(model=c("ARIMA(8,0,0)","ARIMA(7,0,0)","ARIMA(9,0,0)","ARIMA(8,0,1)"),
+           AICc = c(arima80$aicc, arima70$aicc, arima90$aicc, arima81$aicc))
+```
+
+### Check the residuals
+
+```{r, eval = TRUE, echo=FALSE, warning=FALSE, error=FALSE,fig.height=4, fig.width=6}
+checkresiduals(arima80,lag=29,test="LB")
+mean(arima80$residuals)
+ARIMA<-arima80
+ARIMA
+```
+
+
+### Plot the characterristic roots
+
+```{r, eval = TRUE, echo=FALSE, warning=FALSE, error=FALSE,fig.height=4, fig.width=6}
+autoplot(ARIMA)+ xlab("") +ylab("")+ 
+  ggtitle("Inverse roots of characteristic polynomial")
+```
+
+##(3) Use the model to forecast the last h = 12 observations. Evaluate the forecasts and plot them and the original time series. Interpret.
+
+```{r, eval = TRUE, echo=FALSE, warning=FALSE, error=FALSE,fig.height=4, fig.width=6}
+autoplot(forecast(ARIMA, h=length(test2)), series ="forecast" )+
+  autolayer(lynx, series ="lynx" )+
+  xlab("Time") + ylab("")+ 
+  theme(legend.position="bottom", legend.box = "vertical")
+
+accuracy(forecast(ARIMA, h=length(test2)),test2)
+testACC = matrix(NA, nrow=4, ncol=6)
+rownames(testACC) = c("ARIMA", "NNAR", "Average", "Regression")
+colnames(testACC)<-c("ME","RMSE","MAE","MPE","MAPE","MASE")
+testACC[1,]<-accuracy(forecast(ARIMA, h=length(test2)),test2)["Test set",1:6]
+
+```
+
+##(4) Use a neural network autoregressive model 
+
+```{r, eval = TRUE, echo=FALSE, warning=FALSE, error=FALSE,fig.height=4, fig.width=6}
+set.seed(1)
+NNAR <- nnetar(train2,p=8)
+NNAR
+checkresiduals(NNAR)
+mean(na.omit(NNAR$residuals))
+```
+
+### Forecast the same observations as above
+
+```{r, eval = TRUE, echo=FALSE, warning=FALSE, error=FALSE,fig.height=4, fig.width=6}
+autoplot(forecast(NNAR, h=length(test2), PI=TRUE), series ="forecast" )+
+  autolayer(lynx, series ="lynx" )+ 
+  xlab("Time") + ylab("")+ 
+  theme(legend.position="bottom", legend.box = "vertical")
+
+accuracy(forecast(NNAR, h=length(test2)),test2)
+testACC[2,]<-accuracy(forecast(NNAR, h=length(test2)),test2)["Test set",1:6]
+```
+
+##(5) Combine the forecasts in two ways 
+
+```{r, eval = TRUE, echo=FALSE, warning=FALSE, error=FALSE,fig.height=4, fig.width=6}
+# Combine the forecasts by average
+fARIMA <-forecast(ARIMA, h=length(test2))$mean
+fNNAR <-forecast(NNAR, h=length(test2))$mean
+comb1 <- (fARIMA+fNNAR)/2
+testACC[3,]<-accuracy(comb1,test2)["Test set",1:6]
+
+# Combine the forecasts by regression
+#take the subset of the variables because there are NAs in the fitted value of the first eight observations from the NNAR(8,4) model
+fitARIMA <- window(ARIMA$fitted,start=1889)
+fitNNAR <- window(NNAR$fitted,start=1889)
+train3 <- window(train2,start=1889) 
+#fit a linear regression without intercept term
+lm <- lm(train3~fitARIMA+fitNNAR-1)
+coeARIMA <- lm$coefficient["fitARIMA"]
+coeNNAR <- lm$coefficient["fitNNAR"]
+# scale the coefficients of the regression so that the sum of the coefficients is 1
+wARIMA <- coeARIMA/(coeARIMA+coeNNAR)
+wNNAR <- coeNNAR/(coeARIMA+coeNNAR)
+comb2 <- wARIMA*fARIMA+ wNNAR*fNNAR
+testACC[4,]<-accuracy(comb2,test2)["Test set",1:6]
+```
+
+##(6) Evaluate the four forecasts and plot the data and the forecasts
+
+```{r, eval = TRUE, echo=FALSE, warning=FALSE, error=FALSE,fig.height=4, fig.width=6}
+testACC
+
+autoplot(window(lynx,start=1900))+
+  autolayer(forecast(NNAR, h=length(test2)), series ="NNAR",PI=FALSE)+
+  autolayer(forecast(ARIMA, h=length(test2)), series ="ARIMA",PI=FALSE)+
+  autolayer(comb1, series ="AVERAGE")+
+  autolayer(comb2, series ="Regression")+ 
+  theme(legend.position="bottom", legend.box = "vertical")+ 
+  xlab("Time") + ylab("Lynx")+ 
+  ggtitle("Point forecasts from ARIMA, NNAR and combinations")
+```
+
+
+
